@@ -1,0 +1,8 @@
+{
+  "speaker": "voice_a",
+  "source_kind": "user_provided",
+  "source_description": "用户本地提供的单一说话人录音；此文件仅展示记录结构。",
+  "source_urls": [],
+  "usage_note": "按本项目已有使用授权处理；不随源码打包原始音频。",
+  "recording_notes": "保留原始采样率文件；训练前复核文字与说话人。"
+}

@@ -1,0 +1,2 @@
+{"audio":"audio/voice_a/val_001.wav","text":"等雨停下来，我们再一起出发。","ref_audio":"audio/voice_a/val_002.wav","duration":4.1,"ref_duration":4.6,"dataset_id":0}
+{"audio":"audio/voice_a/val_002.wav","text":"你真的听清楚刚才那句话了吗？","ref_audio":"audio/voice_a/val_001.wav","duration":4.6,"ref_duration":4.1,"dataset_id":0}

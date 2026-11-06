@@ -1,0 +1,2 @@
+{"audio":"audio/voice_a/train_001.wav","text":"今天的风很轻，我们慢慢走。","ref_audio":"audio/voice_a/train_002.wav","duration":4.2,"ref_duration":4.5,"dataset_id":0}
+{"audio":"audio/voice_a/train_002.wav","text":"这段故事，我想从头讲给你听。","ref_audio":"audio/voice_a/train_001.wav","duration":4.5,"ref_duration":4.2,"dataset_id":0}

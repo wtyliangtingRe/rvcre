@@ -1,0 +1,18 @@
+{
+  "voxcpm": {
+    "python": "../.venvs/voxcpm/Scripts/python.exe",
+    "upstream_dir": "../third_party/VoxCPM",
+    "model_dir": "../models/VoxCPM2",
+    "device": "cuda",
+    "upstream_revision": "4b8dd4440d33396b3f429201f8af0529b4d2c601",
+    "model_revision": "32279effe8c19989596f05d353d1447f51d9e915"
+  },
+  "seedvc": {
+    "python": "../.venvs/seedvc/Scripts/python.exe",
+    "upstream_dir": "../third_party/seed-vc",
+    "model_dir": "../models/SeedVC",
+    "device": "cuda",
+    "upstream_revision": "51383efd921027683c89e5348211d93ff12ac2a8",
+    "model_revision": "257283f9f41585055e8f858fba4fd044e5caed6e"
+  }
+}
