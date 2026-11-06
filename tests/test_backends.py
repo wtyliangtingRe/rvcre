@@ -283,16 +283,20 @@ def test_runner_propagates_failure_without_fallback(configured_runner, tmp_path,
 
 
 def test_runner_cancellation_terminates_worker(configured_runner, tmp_path, monkeypatch):
-    processes = []
+    worker_processes = []
+    worker_command = [sys.executable, "-c", "import time;print('running',flush=True);time.sleep(30)"]
     original_popen = subprocess.Popen
 
     def capture_process(*args, **kwargs):
         process = original_popen(*args, **kwargs)
-        processes.append(process)
+        command = args[0] if args else kwargs.get("args")
+        # Windows also starts taskkill to terminate the worker's process tree.
+        if command == worker_command:
+            worker_processes.append(process)
         return process
 
     monkeypatch.setattr(runner_module.subprocess, "Popen", capture_process)
-    monkeypatch.setattr(configured_runner, "_command", lambda *args: [sys.executable, "-c", "import time;print('running',flush=True);time.sleep(30)"])
+    monkeypatch.setattr(configured_runner, "_command", lambda *args: worker_command)
     event = threading.Event()
     timer = threading.Timer(0.3, event.set)
     timer.start()
@@ -303,8 +307,8 @@ def test_runner_cancellation_terminates_worker(configured_runner, tmp_path, monk
     finally:
         timer.cancel()
     assert time.monotonic() - started < 5
-    assert len(processes) == 1
-    assert processes[0].poll() is not None
+    assert len(worker_processes) == 1
+    assert worker_processes[0].poll() is not None
     assert not (tmp_path / "cancel/result.json").exists()
 
 

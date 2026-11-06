@@ -77,7 +77,7 @@ def test_hifi_cannot_silently_ignore_expression_controls(service, tone):
 
 def test_voice_folder_can_move_without_changing_identity(service, tone, tmp_path):
     voice = service.import_voice("可迁移", str(tone))
-    stored = json.loads((service.voices_dir / voice["id"] / "profile.json").read_text())
+    stored = json.loads((service.voices_dir / voice["id"] / "profile.json").read_text(encoding="utf-8"))
     assert stored["reference_path"] == "reference.wav"
     moved = tmp_path / "moved"
     shutil.copytree(service.workspace, moved)
