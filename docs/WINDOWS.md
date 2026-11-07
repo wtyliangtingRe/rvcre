@@ -38,6 +38,31 @@ py -3.11 -m venv .venv
 
 默认工作目录是 `data/`，服务只监听本机 `127.0.0.1`。声音档案、任务记录和输出音频都保存在本地。没有配置模型时仍能进入界面、导入和分析参考；生成任务会给出缺失环境或权重的具体原因，不显示伪造结果。
 
+### 使用已有 Conda 的另一种入口
+
+如果 Windows 的 `py -3.11` 找不到解释器，可以直接用 Conda 创建 Python 3.11 主环境：
+
+```powershell
+conda create -n rvcre python=3.11 pip -y
+conda env config vars set -n rvcre PYTHONNOUSERSITE=1 PIP_USER=0
+conda activate rvcre
+python -m pip install -e ".[ui]"
+python -m pip check
+python -m rvcre ui
+```
+
+`PYTHONNOUSERSITE=1` 关闭默认用户包目录，避免读取 `%APPDATA%\Python\Python311\site-packages` 中其他工具的依赖；`PIP_USER=0` 关闭 pip 用户目录安装模式。这两个设置只保存在 `rvcre` 环境中。已有环境可直接设置变量，然后 `conda deactivate`、`conda activate rvcre` 使其生效。它们不会还原此前已经被其他安装操作替换的共享包。
+
+日常先 `conda activate rvcre`，再在仓库根目录执行 `python -m rvcre ui`。当前 `Start-RVCre.cmd` / `Start-RVCre.ps1` 固定使用 `.venv`；Conda 路线使用上述 Python 入口。下文命令开头的 `.\.venv\Scripts\python.exe` 相应换成 `python`，模型专用的 `.venvs/voxcpm` 和 `.venvs/seedvc` 仍由脚本自动管理。
+
+检查隔离状态可运行：
+
+```powershell
+python -c "import sys, site; print(sys.executable); print('ENABLE_USER_SITE:', site.ENABLE_USER_SITE); print('Roaming package paths:', [p for p in sys.path if 'roaming' in p.lower() and 'site-packages' in p.lower()])"
+```
+
+解释器应位于 Conda 的 `envs/rvcre/`，后两项应为 `False`、`[]`。来源：[Python 用户目录开关](https://docs.python.org/3.11/using/cmdline.html#envvar-PYTHONNOUSERSITE)、[Conda 环境变量](https://docs.conda.io/projects/conda/en/stable/commands/env/config/vars/set.html)。
+
 ## 2. 准备模型环境
 
 先查看将运行的安装命令，不做安装：
@@ -60,6 +85,20 @@ py -3.11 -m venv .venv
 如果选择 CPU 安装，必须显式写 `--device cpu`；这表示采用 CPU wheel，不代表大模型已达到适合交互的速度。VoxCPM2 的 v2 环境不允许选择旧的 PyTorch 2.4 配置。
 
 已有上游 checkout 包含未提交更改时，脚本会停止更新该 checkout，避免覆盖用户修改。先保留本地改动再重新设置，不需要重新删除整个应用。
+
+### 软件源与构建依赖
+
+PyTorch 三件套使用 `--torch-index` 选择的官方 wheel 源。其余 Python 包默认沿用本机 pip 配置；需要明确指定通用包源时，可传 `--package-index`：
+
+```powershell
+.\.venv\Scripts\python.exe scripts/setup_backends.py --backend voxcpm --package-index https://pypi.org/simple
+```
+
+这个选项用于普通依赖和它们的隔离构建环境，保持 PyTorch 的 CUDA wheel 源独立。使用 Conda 时，命令开头换成 `python`。也可以明确指定自己使用的通用 Python 镜像地址。
+
+若 PyTorch 已装好，接着在 `Installing build dependencies` 阶段报 `No matching distribution found for setuptools_scm>=8`，表示 pip 没能从当前可用候选中找到所需构建工具。该包有支持 Python 3.11 的版本，仅凭这一行不能确定是索引配置、镜像还是网络原因。先用上面的显式 PyPI 命令重试；同一环境中满足版本要求的 PyTorch 会被复用。
+
+VoxCPM 的构建依赖在上游 `pyproject.toml` 中声明。pip 会在临时隔离环境安装这些工具，因此只在主程序 Conda 环境里手动装 `setuptools-scm` 不会解决隔离构建的取包问题。安装脚本保留构建隔离；此问题不需要清空下载缓存、删掉模型环境或修改上游文件。来源：[固定版本 VoxCPM 构建声明](https://github.com/OpenBMB/VoxCPM/blob/4b8dd4440d33396b3f429201f8af0529b4d2c601/pyproject.toml)、[pip 构建隔离说明](https://pip.pypa.io/en/stable/reference/build-system/#build-isolation)。
 
 ## 3. 按需下载固定模型
 
@@ -113,6 +152,8 @@ Seed-VC v2 使用 HuBERT/ASTRAL 内容表示；下载的 Whisper 部分是 token
 | 现象 | 下一步 |
 |---|---|
 | 找不到 Python 3.11 | 用 `--python` 或 setup 的 `-Python` 指定解释器完整路径 |
+| Conda 安装时引用 Roaming 用户目录旧包 | 按上面的 Conda 路线关闭用户包目录，重新激活后正常补装并执行 `pip check` |
+| 构建阶段找不到 `setuptools_scm>=8` | 用 `--package-index https://pypi.org/simple` 明确普通依赖源；保留已装好的 PyTorch |
 | 界面可开，生成后端未配置 | 运行对应 `setup_backends.py --backend ...`，随后显式下载模型 |
 | `.wav` 可读，M4A/其他文件失败 | 安装可执行的 FFmpeg/ffprobe，或先转成 WAV；不要仅改扩展名 |
 | `doctor` 通过，GPU 推理仍失败 | 看 `backend.log` 中实际 CUDA、显存或依赖错误；doctor 不是 GPU 推理测试 |

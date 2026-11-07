@@ -71,6 +71,7 @@ def setup_one(name: str, args, configuration: dict) -> dict:
         raise ValueError("--device cuda cannot use the CPU wheel index.")
     if args.device == "cpu" and index != "cpu":
         raise ValueError("--device cpu must use the CPU wheel index.")
+    package_index_args = ["--index-url", args.package_index] if args.package_index else []
 
     if not args.dry_run:
         upstream.parent.mkdir(parents=True, exist_ok=True)
@@ -87,7 +88,10 @@ def setup_one(name: str, args, configuration: dict) -> dict:
     execute(["git", "-C", str(upstream), "checkout", "--detach", source["revision"]], dry_run=args.dry_run)
     if not executable.is_file():
         execute([*python_command(args.python), "-m", "venv", str(environment)], dry_run=args.dry_run)
-    execute([str(executable), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools"], dry_run=args.dry_run)
+    execute(
+        [str(executable), "-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools", *package_index_args],
+        dry_run=args.dry_run,
+    )
     execute(
         [str(executable), "-m", "pip", "install", f"torch=={version}", f"torchaudio=={version}",
          f"torchvision=={profile['torchvision']}", "--index-url", f"https://download.pytorch.org/whl/{index}"],
@@ -101,7 +105,7 @@ def setup_one(name: str, args, configuration: dict) -> dict:
         constraints.write_text("\n".join(pins) + "\n", encoding="utf-8")
     if name == "voxcpm":
         execute(
-            [str(executable), "-m", "pip", "install", "-c", str(constraints), "-e", str(upstream), "tensorboardX"],
+            [str(executable), "-m", "pip", "install", "-c", str(constraints), "-e", str(upstream), "tensorboardX", *package_index_args],
             dry_run=args.dry_run,
         )
     else:
@@ -109,7 +113,7 @@ def setup_one(name: str, args, configuration: dict) -> dict:
         if not args.dry_run:
             requirements.write_text(seed_requirements((upstream / "requirements.txt").read_text(encoding="utf-8")), encoding="utf-8")
         execute(
-            [str(executable), "-m", "pip", "install", "-c", str(constraints), "-r", str(requirements)],
+            [str(executable), "-m", "pip", "install", "-c", str(constraints), "-r", str(requirements), *package_index_args],
             dry_run=args.dry_run,
         )
     verify = (
@@ -146,6 +150,10 @@ def main() -> None:
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
     parser.add_argument("--torch-version", choices=TORCH_PROFILES, help="Override the backend's default Torch profile.")
     parser.add_argument("--torch-index", choices=("cu124", "cu126", "cu128", "cpu"))
+    parser.add_argument(
+        "--package-index", default=None,
+        help="Index URL for ordinary packages and build dependencies; omit to keep existing pip settings.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without installing or writing configuration.")
     args = parser.parse_args()
     args.config = args.config.resolve()

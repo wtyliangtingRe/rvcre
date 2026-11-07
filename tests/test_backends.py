@@ -321,14 +321,56 @@ def test_download_manifest_is_pinned_and_excludes_unneeded_whisper_weights():
     assert not any(name.endswith((".bin", ".safetensors", ".pt")) for name in whisper["files"])
 
 
-def test_setup_filters_conflicting_upstream_torch_pins():
+@pytest.fixture
+def setup_script():
     path = Path(__file__).resolve().parents[1] / "scripts/setup_backends.py"
     spec = importlib.util.spec_from_file_location("rvcre_setup_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    result = module.seed_requirements(
+    return module
+
+
+def test_setup_filters_conflicting_upstream_torch_pins(setup_script):
+    result = setup_script.seed_requirements(
         "torch --pre --index-url nightly\ntorch==2.4.0\ntorchvision==0.19.0\ntorchaudio==2.4.0\nlibrosa==0.10.2\n"
     )
     assert "torch" not in result
     assert "librosa==0.10.2" in result
     assert "imageio-ffmpeg" in result
+
+
+@pytest.mark.parametrize("package_index", [None, "https://packages.example/simple"])
+def test_setup_cli_keeps_package_and_torch_indexes_separate(setup_script, tmp_path, monkeypatch, package_index):
+    commands = []
+    monkeypatch.setattr(setup_script, "ROOT", tmp_path)
+    monkeypatch.setattr(setup_script, "execute", lambda command, **kwargs: commands.append(command))
+    argv = [
+        "setup_backends.py", "--backend", "voxcpm", "--backend", "seedvc", "--dry-run",
+        "--config", str(tmp_path / "backends.json"), "--torch-version", "2.8.0", "--torch-index", "cu128",
+    ]
+    if package_index is not None:
+        argv += ["--package-index", package_index]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    setup_script.main()
+
+    installs = [command for command in commands if command[1:4] == ["-m", "pip", "install"]]
+    torch_installs = [command for command in installs if "torch==2.8.0" in command]
+    ordinary_installs = [command for command in installs if command not in torch_installs]
+    assert len(torch_installs) == 2
+    assert len(ordinary_installs) == 4  # Bootstrap each environment, then install each backend.
+    assert sum("--upgrade" in command for command in ordinary_installs) == 2
+    assert sum("-e" in command for command in ordinary_installs) == 1
+    assert sum("-r" in command for command in ordinary_installs) == 1
+    for command in torch_installs:
+        assert command.count("--index-url") == 1
+        assert command[command.index("--index-url") + 1] == "https://download.pytorch.org/whl/cu128"
+        assert "--upgrade" not in command
+    for command in ordinary_installs:
+        if package_index is None:
+            assert "--index-url" not in command
+        else:
+            assert command.count("--index-url") == 1
+            assert command[command.index("--index-url") + 1] == package_index
+    assert all("--no-build-isolation" not in command for command in installs)
+    assert all("--force-reinstall" not in command for command in installs)
