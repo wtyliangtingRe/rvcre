@@ -53,7 +53,9 @@ python -m rvcre ui
 
 `PYTHONNOUSERSITE=1` 关闭默认用户包目录，避免读取 `%APPDATA%\Python\Python311\site-packages` 中其他工具的依赖；`PIP_USER=0` 关闭 pip 用户目录安装模式。这两个设置只保存在 `rvcre` 环境中。已有环境可直接设置变量，然后 `conda deactivate`、`conda activate rvcre` 使其生效。它们不会还原此前已经被其他安装操作替换的共享包。
 
-日常先 `conda activate rvcre`，再在仓库根目录执行 `python -m rvcre ui`。当前 `Start-RVCre.cmd` / `Start-RVCre.ps1` 固定使用 `.venv`；Conda 路线使用上述 Python 入口。下文命令开头的 `.\.venv\Scripts\python.exe` 相应换成 `python`，模型专用的 `.venvs/voxcpm` 和 `.venvs/seedvc` 仍由脚本自动管理。
+日常可以直接双击仓库根目录的 [`Start-RVCre.bat`](../Start-RVCre.bat)。它会切换到自身所在的项目目录、激活 `rvcre` Conda 环境，再运行 `python -m rvcre ui`，浏览器由应用自动打开。脚本默认 Miniconda 位于 `D:\EnglishOnly\miniconda`；安装在别处时，只需编辑脚本中的 `RVCreCondaRoot` 一行。启动失败时窗口会保留错误信息。使用期间保留终端窗口，结束时按 `Ctrl+C`；也可以给 BAT 创建桌面快捷方式，BAT 本身保留在仓库根目录。
+
+手动入口仍为 `conda activate rvcre` 后在仓库根目录执行 `python -m rvcre ui`。`scripts/Start-RVCre.cmd` / `Start-RVCre.ps1` 使用 `.venv`。下文命令开头的 `.\.venv\Scripts\python.exe` 相应换成 `python`，模型专用的 `.venvs/voxcpm` 和 `.venvs/seedvc` 仍由脚本自动管理。
 
 检查隔离状态可运行：
 

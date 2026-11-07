@@ -41,6 +41,8 @@ py -3.11 -m venv .venv
 
 默认地址为 `http://127.0.0.1:7860`。完整操作、代理和常见问题见 [Windows 安装指南](docs/WINDOWS.md)。
 
+**已经使用 Conda 的 `rvcre` 环境安装好？** 双击仓库根目录的 [Start-RVCre.bat](Start-RVCre.bat) 即可启动。默认 Miniconda 路径为 `D:\EnglishOnly\miniconda`；其他安装位置只需修改 BAT 中的 `RVCreCondaRoot`。脚本会激活环境、切换到项目目录并打开界面，保留窗口即可继续使用。
+
 ### 2. 准备声音设计与 TTS
 
 ```powershell
