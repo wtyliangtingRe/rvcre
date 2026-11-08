@@ -3,11 +3,57 @@
 import math
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
+
+
+def merge_audio_files(paths: list[Path], destination: Path, gap_seconds: float = 0.2,
+                      cancel_event: threading.Event | None = None) -> dict:
+    """Stream ordered clips into PCM WAV without changing speed or trimming speech."""
+    if not paths:
+        raise ValueError("没有可拼接的分段音频。")
+    if not math.isfinite(gap_seconds) or not 0 <= gap_seconds <= 10:
+        raise ValueError("分段间隔应在 0 到 10 秒之间。")
+    infos = [sf.info(path) for path in paths]
+    first = infos[0]
+    if any(info.frames <= 0 for info in infos):
+        raise ValueError("分段音频为空，无法拼接。")
+    if any((info.samplerate, info.channels) != (first.samplerate, first.channels) for info in infos):
+        raise ValueError("分段音频的采样率或声道数不一致，未进行自动拼接；原始分段已保留。")
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".tmp.wav")
+    gap_frames = round(gap_seconds * first.samplerate)
+
+    def check_cancelled():
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("音频拼接已取消，已生成的分段保留。")
+
+    try:
+        with sf.SoundFile(temporary, mode="w", samplerate=first.samplerate,
+                          channels=first.channels, subtype="PCM_24", format="WAV") as output:
+            for index, path in enumerate(paths):
+                check_cancelled()
+                if index and gap_frames:
+                    output.write(np.zeros((gap_frames, first.channels), dtype="float32"))
+                with sf.SoundFile(path) as source:
+                    for block in source.blocks(blocksize=65536, dtype="float32", always_2d=True):
+                        check_cancelled()
+                        if not np.isfinite(block).all():
+                            raise ValueError("分段音频包含无效采样。")
+                        output.write(block)
+            frames = output.frames
+        check_cancelled()
+        temporary.replace(destination)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return {"sample_rate": first.samplerate, "channels": first.channels,
+            "frames": frames, "duration_seconds": frames / first.samplerate}
 
 
 def load_audio(path: Path) -> tuple[np.ndarray, int]:

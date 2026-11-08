@@ -134,4 +134,9 @@ def create_app(workspace: Path = Path("data"), config_path: Path | None = None,
             raise HTTPException(404, "音频文件已被移动或删除。")
         return FileResponse(path, media_type="audio/wav", filename=path.name)
 
+    @app.get("/api/jobs/{job_id}/files/{index}")
+    def download(job_id: str, index: int):
+        path = service.file_path(job_id, index)
+        return FileResponse(path, filename=path.name)
+
     return app

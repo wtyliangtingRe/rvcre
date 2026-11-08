@@ -85,6 +85,29 @@ def _job_message(job: dict) -> str:
     }.get(status, "")
     if status == "failed":
         detail = _escape(job.get("error") or "引擎没有返回有效结果，请检查下方的本地引擎状态。")
+    progress = job.get("progress") or {}
+    total = progress.get("total", 0)
+    completed = progress.get("completed", 0)
+    if total > 1:
+        if status == "queued":
+            detail = f"全文已拆为 {total} 段，排队后会依次生成并合并。"
+        elif status == "running":
+            phase = progress.get("phase")
+            if job.get("cancel_requested"):
+                detail = f"已完成 {completed}/{total} 段，停止后可下载已完成的分段。"
+            elif phase == "loading":
+                detail = f"全文共 {total} 段，正在加载本地模型。"
+            elif phase in {"merging", "complete"}:
+                detail = f"已完成 {completed}/{total} 段，正在合并音频并整理分段文件。"
+            else:
+                current = progress.get("current")
+                detail = f"已完成 {completed}/{total} 段。"
+                if current:
+                    detail += f"正在生成第 {current} 段。"
+        elif status == "succeeded":
+            detail = f"全文 {total} 段已合并完成，可以试听完整音频，也可以下载分段音频与文稿。"
+        elif status in {"failed", "cancelled"} and completed:
+            detail += f"\n\n已完成 {completed}/{total} 段，已完成的音频与分段文稿可在下方下载。"
     identifier = _escape(job.get("id", ""))
     return f"**{title}**\n\n{detail}\n\n任务编号：`{identifier}`"
 
@@ -152,20 +175,43 @@ def _design_view(job: dict, *, clear: bool = False) -> tuple:
 
 
 def _generation_view(job: dict, *, clear: bool = False) -> tuple:
-    """Outputs: ID, message, timer, cancel, TTS submit, VC submit, player."""
+    """Outputs: ID, message, timer, cancel, TTS submit, VC submit, player, files."""
     busy = job.get("status") in _ACTIVE
     outputs = job.get("outputs") or []
-    if job.get("status") == "succeeded" and outputs:
-        player = gr.update(value=outputs[0]["path"], visible=True)
+    long_text = (job.get("progress") or {}).get("total", 0) > 1
+    audio = (next((item for item in outputs if item.get("kind") == "merged"), None)
+             if long_text else (outputs[0] if outputs else None))
+    if job.get("status") == "succeeded" and audio:
+        player = gr.update(value=audio["path"], visible=True, label="完整音频" if long_text else "结果音频")
     elif clear or not busy:
         player = gr.update(value=None, visible=False)
     else:
         player = gr.skip()
+    files = job.get("files") or []
+    if not busy and files:
+        downloads = gr.update(value=files, visible=True,
+                              label="分段音频与文稿" if job.get("status") == "succeeded" else "已完成的分段与文稿")
+    elif clear or not busy:
+        downloads = gr.update(value=None, visible=False)
+    else:
+        downloads = gr.skip()
     return (
         job["id"], _job_message(job), gr.update(active=busy),
         gr.update(interactive=busy and not job.get("cancel_requested", False)),
-        gr.update(interactive=not busy), gr.update(interactive=not busy), player,
+        gr.update(interactive=not busy), gr.update(interactive=not busy), player, downloads,
     )
+
+
+def _tts_text_summary(text: str) -> str:
+    from .text import split_tts_text
+
+    segments = split_tts_text(text or "")
+    if not segments:
+        return "生成后可试听完整音频，长文还会保留分段音频与文稿。"
+    count = len(text.strip())
+    if len(segments) == 1:
+        return f"共 {count:,} 个字符 · 生成 1 段音频"
+    return f"共 {count:,} 个字符 · 自动切分为 {len(segments)} 段 · 每段最多 600 个字符"
 
 
 class _UiActions:
@@ -316,7 +362,7 @@ class _UiActions:
 
     def poll_generation(self, job_id: str | None) -> tuple:
         if not job_id:
-            return (gr.skip(), gr.skip(), gr.update(active=False), *[gr.skip() for _ in range(4)])
+            return (gr.skip(), gr.skip(), gr.update(active=False), *[gr.skip() for _ in range(5)])
         return _generation_view(self._call(self.service.get_job, job_id))
 
     def cancel_design(self, job_id: str | None) -> tuple:
@@ -459,7 +505,11 @@ def build_ui(service: VoiceService) -> gr.Blocks:
                             selected_voice = gr.Markdown("先在声音库导入录音，或保存一个设计候选。", elem_classes="rv-muted")
                             with gr.Tabs():
                                 with gr.Tab("文字转语音 · TTS"):
-                                    tts_text = gr.Textbox(label="要说的话", lines=6, placeholder="在这里写下想让这个声音说的话。", info="单次最多 600 个字符；长篇文本请按段提交。")
+                                    tts_text = gr.Textbox(label="要说的话", lines=8,
+                                        placeholder="在这里粘贴整篇文稿，也可以只写一句话。",
+                                        info="长文会按段落和句子自动切分，依次生成后合并。")
+                                    tts_summary = gr.Markdown("生成后可试听完整音频，长文还会保留分段音频与文稿。",
+                                                              elem_classes="rv-muted")
                                     tts_mode = gr.Radio([("可控表达", "controllable"), ("HiFi 参考复现", "hifi")], value="controllable", label="合成方式")
                                     mode_note = gr.Markdown(_mode_controls("controllable")[1], elem_classes="rv-muted")
                                     with gr.Column() as expression_controls:
@@ -490,6 +540,8 @@ def build_ui(service: VoiceService) -> gr.Blocks:
                                 generation_refresh = gr.Button("刷新任务状态")
                             generated_audio = gr.Audio(label="结果音频", type="filepath", interactive=False,
                                                        visible=False, buttons=["download"])
+                            generated_files = gr.File(label="分段音频与文稿", file_count="multiple",
+                                                      interactive=False, visible=False)
 
             with gr.Accordion("本地引擎与模型准备", open=False):
                 gr.Markdown("模型权重与依赖准备好后可离线运行。界面不会自动下载模型。")
@@ -501,7 +553,7 @@ def build_ui(service: VoiceService) -> gr.Blocks:
         design_outputs = [design_job, design_status, design_timer, design_cancel, design_submit,
                           *candidate_players, selected_candidate, candidate_save]
         generation_outputs = [generation_job, generation_status, generation_timer, generation_cancel,
-                              tts_submit, vc_submit, generated_audio]
+                              tts_submit, vc_submit, generated_audio, generated_files]
         spec_components = [pitch, resonance, brightness, breathiness, roughness, maturity, presentation, description]
 
         app.load(actions.refresh_voices, inputs=[library_voice], outputs=voice_outputs, **private)
@@ -527,6 +579,8 @@ def build_ui(service: VoiceService) -> gr.Blocks:
         candidate_save.click(actions.save_candidate, inputs=[design_job, selected_candidate, candidate_name],
                              outputs=[candidate_save_status, *voice_outputs], concurrency_limit=1, **private)
         tts_mode.change(_mode_controls, inputs=[tts_mode], outputs=[expression_controls, mode_note], **private)
+        tts_text.input(_tts_text_summary, inputs=[tts_text], outputs=[tts_summary],
+                       queue=False, show_progress="hidden", **private)
         tts_submit.click(actions.start_tts,
                          inputs=[generation_job, generation_voice, tts_text, tts_mode, speed, emotion, instruction, tts_seed],
                          outputs=generation_outputs, concurrency_id="generation-submit", concurrency_limit=1, **private)

@@ -4,11 +4,13 @@ import hashlib
 import shutil
 import uuid
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
-from .audio import analyze_audio, reference_audio
+from .audio import analyze_audio, merge_audio_files, reference_audio
 from .jobs import JobManager
 from .schema import Performance, VoiceSpec, design_instruction, performance_instruction
 from .storage import item_path, read_json, timestamp, write_json
+from .text import TTS_SEGMENT_CHARS, split_tts_text
 
 
 class VoiceService:
@@ -87,11 +89,11 @@ class VoiceService:
         return self.get_voice(identifier)
 
     @staticmethod
-    def _text(text: str, max_length: int = 600) -> str:
+    def _text(text: str, max_length: int | None = 600) -> str:
         text = text.strip()
         if not text:
             raise ValueError("请输入要合成的文本。")
-        if len(text) > max_length:
+        if max_length is not None and len(text) > max_length:
             raise ValueError(f"当前单次任务最多 {max_length} 个字符，请将长篇文本按段提交。")
         return text
 
@@ -113,6 +115,87 @@ class VoiceService:
                     output["path"] = str(path)
             return result
         return self.jobs.submit(request["task"], request, generate)
+
+    @staticmethod
+    def _checked_outputs(outputs: list[dict], directory: Path) -> list[dict]:
+        checked = []
+        for index, output in enumerate(outputs, 1):
+            path = Path(output["path"]).resolve()
+            if not path.is_file() or not path.is_relative_to(directory.resolve()):
+                raise RuntimeError("后端未生成有效的任务音频文件。")
+            checked.append({**output, "path": str(path), "kind": "segment", "segment_index": index})
+        return checked
+
+    @staticmethod
+    def _read_progress(directory: Path) -> dict:
+        try:
+            progress = read_json(directory / "progress.json")
+            return progress if isinstance(progress, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _submit_long_tts(self, request: dict) -> dict:
+        """Run one model process for the whole script, then assemble its clips."""
+        def generate(directory, event):
+            segments = request["segments"]
+            total = len(segments)
+            (directory / "full-text.txt").write_text(request["text"], encoding="utf-8")
+            for index, text in enumerate(segments, 1):
+                (directory / f"text-{index:03d}.txt").write_text(text, encoding="utf-8")
+            result = self.runner.run("voxcpm", request, directory, cancel_event=event)
+            if event.is_set():
+                return result
+            outputs = self._checked_outputs(result["outputs"], directory)
+            if len(outputs) != total:
+                raise RuntimeError(f"分段生成不完整：应有 {total} 段，实际返回 {len(outputs)} 段。")
+            progress = {
+                "total": total, "completed": total, "current": None, "phase": "merging",
+                "outputs": outputs, "metadata": result.get("metadata", {}),
+            }
+            write_json(directory / "progress.json", progress)
+            merged = directory / "merged.wav"
+            audio_info = merge_audio_files([Path(item["path"]) for item in outputs], merged,
+                                          gap_seconds=request["gap_seconds"], cancel_event=event)
+            # Text and audio share an index; originals are copied byte-for-byte into
+            # the archive so individual paragraphs can be regenerated or edited.
+            manifest = {
+                "schema_version": 1, "voice_id": request["voice_id"],
+                "voice_revision": request["voice_revision"], "mode": request["mode"],
+                "performance": request["performance"], "requested_seed": request["seed"],
+                "segment_count": total, "segment_limit": TTS_SEGMENT_CHARS,
+                "gap_seconds": request["gap_seconds"], "merged_audio": audio_info,
+                "segments": [{"index": index, "audio": f"audio-{index:03d}.wav",
+                              "text": f"text-{index:03d}.txt", "characters": len(segments[index - 1]),
+                              "seed": item.get("seed")}
+                             for index, item in enumerate(outputs, 1)],
+            }
+            write_json(directory / "manifest.json", manifest)
+            bundle = directory / "segments.zip"
+            temporary = directory / "segments.tmp.zip"
+            try:
+                with ZipFile(temporary, "w", compression=ZIP_DEFLATED, compresslevel=1) as archive:
+                    for filename in ("full-text.txt", "manifest.json"):
+                        archive.write(directory / filename, filename)
+                    for index, item in enumerate(outputs, 1):
+                        if event.is_set():
+                            raise InterruptedError("分段打包已取消，已生成的分段保留。")
+                        archive.write(item["path"], f"audio-{index:03d}.wav")
+                        archive.write(directory / f"text-{index:03d}.txt", f"text-{index:03d}.txt")
+                if event.is_set():
+                    raise InterruptedError("分段打包已取消，已生成的分段保留。")
+                temporary.replace(bundle)
+            except BaseException:
+                temporary.unlink(missing_ok=True)
+                raise
+            write_json(directory / "progress.json", {**progress, "phase": "complete"})
+            return {
+                "outputs": [{"path": str(merged), "kind": "merged", **audio_info}, *outputs],
+                "metadata": {**result.get("metadata", {}), "segment_count": total,
+                             "gap_seconds": request["gap_seconds"], "bundle_path": str(bundle)},
+            }
+
+        job = self.jobs.submit("tts", request, generate)
+        return self.get_job(job["id"])
 
     def submit_design(self, text: str, spec: dict, candidates: int = 3, seed: int = 42,
                       parent_voice_id: str | None = None) -> dict:
@@ -155,13 +238,18 @@ class VoiceService:
                 raise ValueError("Hi-Fi 模式需要与保存的参考片段准确对应的转写。")
             if controls != Performance():
                 raise ValueError("Hi-Fi 模式不支持额外表达控制，请恢复默认设置或使用可控模式。")
-        return self._submit("voxcpm", {
-            "task": "tts", "text": self._text(text), "voice_id": voice_id,
+        text = self._text(text, max_length=None)
+        segments = split_tts_text(text)
+        request = {
+            "task": "tts", "text": text, "voice_id": voice_id,
             "voice_revision": voice["revision"], "reference_path": voice["reference_path"],
             "reference_text": voice["transcript"], "instruction": performance_instruction(controls),
             "performance": controls.model_dump(), "mode": mode, "seed": self._seed(seed),
             "candidates": 1, "settings": {},
-        })
+        }
+        if len(segments) > 1:
+            return self._submit_long_tts({**request, "segments": segments, "gap_seconds": 0.2})
+        return self._submit("voxcpm", {**request, "text": segments[0]})
 
     def submit_vc(self, voice_id: str, source_path: str, settings: dict | None = None) -> dict:
         voice = self.get_voice(voice_id)
@@ -189,16 +277,64 @@ class VoiceService:
         })
 
     def get_job(self, job_id: str) -> dict:
-        return self.jobs.get(job_id)
+        job = self.jobs.get(job_id)
+        job["files"] = []
+        if job["task"] != "tts":
+            return job
+        directory = self.workspace / "jobs" / job_id
+        request = read_json(directory / "request.json")
+        segments = request.get("segments")
+        if not segments:
+            return job
+        total = len(segments)
+        progress = self._read_progress(directory)
+        completed = []
+        # Each progress snapshot is atomic. A killed worker can therefore expose
+        # its last completed clips without advertising an unfinished WAV.
+        for output in (progress.get("outputs") or [])[:total]:
+            try:
+                completed.extend(self._checked_outputs([output], directory))
+            except (OSError, KeyError, TypeError, RuntimeError):
+                break
+        for index, output in enumerate(completed, 1):
+            output["segment_index"] = index
+        phase = progress.get("phase", "loading")
+        if job["status"] == "succeeded":
+            phase = "complete"
+            bundle = directory / "segments.zip"
+            if bundle.is_file() and bundle.resolve().is_relative_to(directory.resolve()):
+                job["files"] = [str(bundle)]
+        else:
+            job["outputs"] = completed
+            for index, output in enumerate(completed, 1):
+                job["files"].append(output["path"])
+                text_path = directory / f"text-{index:03d}.txt"
+                if text_path.is_file() and text_path.resolve().is_relative_to(directory.resolve()):
+                    job["files"].append(str(text_path))
+        job["progress"] = {
+            "total": total, "completed": total if job["status"] == "succeeded" else len(completed),
+            "current": progress.get("current"), "phase": phase,
+        }
+        return job
 
     def cancel_job(self, job_id: str) -> dict:
-        return self.jobs.cancel(job_id)
+        self.jobs.cancel(job_id)
+        return self.get_job(job_id)
 
     def audio_path(self, job_id: str, index: int) -> Path:
         job = self.get_job(job_id)
-        if job["status"] != "succeeded" or not 0 <= index < len(job["outputs"]):
+        if not 0 <= index < len(job["outputs"]):
             raise FileNotFoundError("此任务没有对应的音频输出。")
         path = Path(job["outputs"][index]["path"]).resolve()
         if not path.is_relative_to(self.workspace / "jobs" / job_id):
             raise ValueError("任务音频路径无效。")
+        return path
+
+    def file_path(self, job_id: str, index: int) -> Path:
+        files = self.get_job(job_id)["files"]
+        if not 0 <= index < len(files):
+            raise FileNotFoundError("此任务没有对应的下载文件。")
+        path = Path(files[index]).resolve()
+        if not path.is_file() or not path.is_relative_to(self.workspace / "jobs" / job_id):
+            raise FileNotFoundError("任务文件已被移动或删除。")
         return path
