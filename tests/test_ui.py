@@ -28,6 +28,33 @@ def finish(service, job_id):
     raise AssertionError("Test task did not finish")
 
 
+@pytest.mark.parametrize(("transcript", "notes", "source_note", "expected"), [
+    (None, None, None, ("", "", "")),
+    ("", " \n ", "\t", ("", "", "")),
+    ("  对应参考录音的转写。\n", None, None, ("对应参考录音的转写。", "", "")),
+    ("  对应转写。  ", "  旁白用\n保留这行。  ", "  本地导入  ",
+     ("对应转写。", "旁白用\n保留这行。", "本地导入")),
+])
+def test_import_voice_saves_empty_or_filled_optional_fields(
+        service, tone, transcript, notes, source_note, expected):
+    actions = _UiActions(service)
+    saved = actions.import_voice("  新的参考声音  ", str(tone), transcript, notes, source_note)
+    profile = service.get_voice(saved[1]["value"])
+    assert profile["name"] == "新的参考声音"
+    assert (profile["transcript"], profile["notes"], profile["source"]["note"]) == expected
+    assert profile["source_transcript"] == expected[0]
+    assert saved[2]["value"] == profile["id"]
+    assert (profile["name"], profile["id"]) in saved[3]["choices"]
+    assert service.runner.requests == []
+
+
+@pytest.mark.parametrize("name", [None, "", " \n\t "])
+def test_import_voice_requires_a_name_without_creating_a_profile(service, tone, name):
+    with pytest.raises(gr.Error, match="请为声音填写名称"):
+        _UiActions(service).import_voice(name, str(tone), None, None, None)
+    assert service.list_voices() == []
+
+
 def test_design_candidates_are_saved_by_selected_index(service):
     actions = _UiActions(service)
     submitted = actions.start_design(None, "这是测试文本。", *_DEFAULT_SPEC, 3, 42, None)

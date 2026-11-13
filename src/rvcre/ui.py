@@ -247,15 +247,18 @@ class _UiActions:
     def refresh_voices(self, selected: str | None = None) -> tuple:
         return self._voice_updates(selected)
 
-    def import_voice(self, name: str, audio_path: str | None, transcript: str,
-                     notes: str, source_note: str) -> tuple:
+    def import_voice(self, name: str | None, audio_path: str | None, transcript: str | None,
+                     notes: str | None, source_note: str | None) -> tuple:
         if not audio_path:
             raise gr.Error("请先上传或录制一段参考声音。")
-        if not name.strip():
+        # Untouched or cleared Gradio textboxes can submit None.
+        name = (name or "").strip()
+        if not name:
             raise gr.Error("请为声音填写名称。")
         profile = self._call(
-            self.service.import_voice, name=name.strip(), audio_path=audio_path,
-            transcript=transcript.strip(), notes=notes.strip(), source_note=source_note.strip(),
+            self.service.import_voice, name=name, audio_path=audio_path,
+            transcript=(transcript or "").strip(), notes=(notes or "").strip(),
+            source_note=(source_note or "").strip(),
             source_kind="reference",
         )
         return (f"已保存 **{_escape(profile['name'])}**，现在可以在「语音生成」中使用。",
@@ -437,13 +440,13 @@ def build_ui(service: VoiceService) -> gr.Blocks:
                     with gr.Row(equal_height=False):
                         with gr.Column(scale=5, min_width=300, elem_classes="rv-card"):
                             gr.Markdown("### 导入一个声音\n\n建议使用 5–12 秒清晰、单人的干声。原录音也会保留。")
-                            import_name = gr.Textbox(label="声音名称", placeholder="例如：青柚 · 自然声线")
+                            import_name = gr.Textbox(value="", label="声音名称", placeholder="例如：青柚 · 自然声线")
                             import_audio = gr.Audio(label="参考录音", type="filepath", sources=["upload", "microphone"])
-                            import_transcript = gr.Textbox(label="参考转写（可选）", lines=3,
+                            import_transcript = gr.Textbox(value="", label="参考转写（可选）", lines=3,
                                 placeholder="准确填写录音说了什么，便于使用 HiFi。长音频会自动选取参考片段。")
                             with gr.Accordion("备注与来源", open=False):
-                                import_notes = gr.Textbox(label="声音备注", lines=2, placeholder="记录声音特点或用途")
-                                import_source = gr.Textbox(label="来源说明", placeholder="例如：自己的录音，2026-11-06")
+                                import_notes = gr.Textbox(value="", label="声音备注", lines=2, placeholder="记录声音特点或用途")
+                                import_source = gr.Textbox(value="", label="来源说明", placeholder="例如：自己的录音，2026-11-06")
                             import_button = gr.Button("保存到声音库", variant="primary")
                             import_status = gr.Markdown("保存时会分析参考片段，首次分析可能需要稍等。", elem_classes="rv-muted")
                         with gr.Column(scale=6, min_width=320, elem_classes="rv-card"):
