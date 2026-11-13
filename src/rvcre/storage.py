@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import time
 
 
 def timestamp() -> str:
@@ -11,7 +12,16 @@ def write_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    for attempt in range(5):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            # A Windows reader can briefly prevent replacing an open file.
+            # Keep the old JSON intact and retry only this atomic operation.
+            if attempt == 4:
+                raise
+            time.sleep(0.05)
 
 
 def read_json(path: Path) -> dict:
