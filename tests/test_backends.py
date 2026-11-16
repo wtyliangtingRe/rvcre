@@ -5,6 +5,7 @@ and no acoustic quality or GPU compatibility is inferred from these tests.
 """
 
 import importlib.util
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import subprocess
@@ -17,7 +18,7 @@ import pytest
 
 from rvcre.backends import BackendCancelled, BackendRunner
 from rvcre.backends import runner as runner_module
-from rvcre.backends.runner import read_config
+from rvcre.backends.runner import native_failure_hint, read_config
 from rvcre.backends.specs import MODEL_ASSETS, REQUIRED_MODEL_FILES
 from rvcre.workers.seedvc import conversion_arguments, local_checkpoint_loader
 from rvcre.workers.voxcpm import generation_arguments
@@ -124,6 +125,7 @@ def test_voxcpm_candidates_load_once_and_record_actual_retry_seeds(tmp_path, mon
 
     monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(device=lambda _: FakeDevice(), __version__="test"))
     monkeypatch.setitem(sys.modules, "voxcpm", types.SimpleNamespace(VoxCPM=types.SimpleNamespace(from_pretrained=from_pretrained)))
+    monkeypatch.setattr(worker, "model_loading", lambda config: nullcontext({"backend": "test-fixture"}))
     result = worker.run(
         {"model_dir": str(model_dir), "device": "cpu", "lora_weights_path": str(tmp_path / "lora")},
         {"task": "design", "text": "测试句。", "seed": 30, "candidates": 3},
@@ -263,12 +265,25 @@ def test_runner_collects_result_and_captures_logs(configured_runner, tmp_path, m
         "f=wave.open(str(w),'wb');f.setnchannels(1);f.setsampwidth(2);f.setframerate(16000);"
         "f.writeframes(b'\\0\\0'*16);f.close(); "
         "p.write_text(json.dumps({'outputs':[{'path':str(w),'seed':42}],'metadata':{'test_fixture':True}}));"
-        "print('worker protocol test')"
+        "print('worker protocol test'); import faulthandler; "
+        "print('native trace:',faulthandler.is_enabled(),'encoding:',sys.stdout.encoding)"
     )
     monkeypatch.setattr(configured_runner, "_command", lambda backend, entry, request, result: [sys.executable, "-c", code, str(result)])
     result = configured_runner.run("voxcpm", {"task": "design", "text": "test"}, tmp_path / "job")
     assert result["outputs"][0]["seed"] == 42
     assert "worker protocol test" in (tmp_path / "job/backend.log").read_text()
+    assert "native trace: True encoding: utf-8" in (tmp_path / "job/backend.log").read_text()
+
+
+@pytest.mark.parametrize("code", [3221225477, -1073741819])
+def test_access_violation_uses_unsigned_or_signed_windows_status(code):
+    hint = native_failure_hint(code)
+    assert "0xC0000005" in hint and "不能判断为内存不足" in hint
+
+
+@pytest.mark.parametrize("code", [0, 1, -11, -9])
+def test_ordinary_exits_and_posix_signals_are_not_windows_access_violations(code):
+    assert native_failure_hint(code) == ""
 
 
 def test_runner_propagates_failure_without_fallback(configured_runner, tmp_path, monkeypatch):

@@ -159,8 +159,42 @@ Seed-VC v2 使用 HuBERT/ASTRAL 内容表示；下载的 Whisper 部分是 token
 | 界面可开，生成后端未配置 | 运行对应 `setup_backends.py --backend ...`，随后显式下载模型 |
 | `.wav` 可读，M4A/其他文件失败 | 安装可执行的 FFmpeg/ffprobe，或先转成 WAV；不要仅改扩展名 |
 | `doctor` 通过，GPU 推理仍失败 | 看 `backend.log` 中实际 CUDA、显存或依赖错误；doctor 不是 GPU 推理测试 |
+| VoxCPM 退出 `3221225477` / `-1073741819` | 对应 Windows `0xC0000005` 原生访问冲突；按下节更新加载兼容处理，再查看完整阶段日志 |
 | Hi-Fi 报参考转写缺失 | 导入与文字逐字对应且无需截取的短参考；可控模式不需要该转写 |
 | ASR 找不到模型 | 提供已有本地 faster-whisper 模型目录；准备工具不会联网自动下载 |
 | 相对模型路径不对 | `config/backends.json` 内相对路径以 `config/` 为基准，例如 `../models/VoxCPM2` |
 
 当前已完成的验证以 CPU 和应用流程为主。没有把“Windows 文档已写好”表述为“所有 Windows GPU 已实测”；具体记录见 [VALIDATION.md](VALIDATION.md)。
+
+### VoxCPM 在加载权重附近发生 0xC0000005
+
+这个状态表示原生代码访问了无效内存地址，不能只凭它判断为显存不足、内存不足或模型文件损坏。它也不同于明确报告分页文件不足的 `os error 1455`。
+
+固定版上游在 `Loading model from safetensors` 后，还会依次执行读取权重、`load_state_dict` 和 `model.to(...)`，原日志没有区分这几步。RVCre 现已给这三个阶段加上 `begin` / `done` 标记，并开启 Python 的原生故障堆栈与 UTF-8 日志。生成开始前还会记录 Python、PyTorch、CUDA 构建、safetensors 和 transformers 版本。
+
+Windows 的默认 `auto` 模式在 safetensors 支持 `backend` 参数时选用 `pread`。这会绕开默认的 mmap 文件映射读取路径；它是针对已知 Windows 加载问题的兼容措施，并不保证修复所有访问冲突。Linux/macOS 继续使用原有默认 mmap 路径，模型文件、设备、精度、文本分段与首段定调逻辑不变。
+
+关闭正在运行的界面，更新 RVCre 代码后，在项目根目录确保 **VoxCPM 专用环境**具有该接口：
+
+```powershell
+.\.venvs\voxcpm\Scripts\python.exe -m pip install --no-deps "safetensors==0.8.0"
+```
+
+这里只调整 safetensors；无需重装 PyTorch 或重新下载模型。重新启动界面后先生成短句，正常后再运行长文。日志应出现：
+
+```text
+[VoxCPM load] safetensors backend=pread requested=auto
+[VoxCPM load] weights.read begin backend=pread
+[VoxCPM load] weights.read done tensors=...
+[VoxCPM load] model.load_state_dict begin
+[VoxCPM load] model.load_state_dict done
+[VoxCPM load] model.to begin target=cuda
+[VoxCPM load] model.to done
+[VoxCPM load] model.ready
+```
+
+`model.to` 也可能记录构造过程中的 dtype 转换，因此可能出现多次；定位时以崩溃前最后一个未完成的阶段及堆栈为准。如果仍失败，保留并提供新任务目录的完整 `backend.log`。只复制末尾弹窗可能漏掉故障位置。
+
+可在 `config/backends.json` 的 `voxcpm` 对象中设置 `"safetensors_backend": "auto"`、`"pread"` 或 `"mmap"`。临时对照时可用环境变量 `RVCRE_SAFETENSORS_BACKEND`，其优先级高于配置；正常使用无需设置。旧版 safetensors 在 `auto` 下会记录提示并保留原读取方式，显式请求不支持的 `pread` 则清楚报错，不自动改成其他模式。
+
+依据：[Microsoft 访问冲突定义](https://learn.microsoft.com/en-us/shows/inside/c0000005)、[固定版 VoxCPM2 加载实现](https://github.com/OpenBMB/VoxCPM/blob/4b8dd4440d33396b3f429201f8af0529b4d2c601/src/voxcpm/model/voxcpm2.py)、[safetensors 0.8.0 发布说明](https://github.com/safetensors/safetensors/releases/tag/v0.8.0)、[Transformers 已合并的 Windows pread 修复](https://github.com/huggingface/transformers/pull/48341)、[Python 3.11 faulthandler](https://docs.python.org/3.11/library/faulthandler.html)。Transformers 的多分片案例是兼容策略的依据，不是本机 VoxCPM 崩溃原因已经确认的证明。

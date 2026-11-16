@@ -1,6 +1,7 @@
 """Long-form worker orchestration with a marked model double, not real inference."""
 
 import builtins
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import sys
@@ -49,6 +50,8 @@ def batch_model(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "voxcpm", types.SimpleNamespace(
         VoxCPM=types.SimpleNamespace(from_pretrained=load),
     ))
+    # Loading compatibility has separate tests; these doubles exercise generation.
+    monkeypatch.setattr(worker, "model_loading", lambda config: nullcontext({"backend": "test-fixture"}))
     config = {"model_dir": str(model_dir), "device": "cpu", "upstream_revision": "test-revision"}
     return config, reference, observed
 

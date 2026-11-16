@@ -20,6 +20,14 @@ class BackendCancelled(RuntimeError):
     """A running backend was stopped by the user."""
 
 
+def native_failure_hint(returncode: int) -> str:
+    # Windows exit codes may be reported as unsigned DWORDs or signed integers.
+    if returncode & 0xFFFFFFFF == 0xC0000005:
+        return (" Windows 原生访问冲突（0xC0000005）；仅凭退出码不能判断为内存不足。"
+                "请查看完整 backend.log 中的加载阶段和崩溃堆栈。")
+    return ""
+
+
 def default_config_path() -> Path:
     return Path(os.environ.get("RVCRE_BACKEND_CONFIG", ROOT / "config" / "backends.json"))
 
@@ -174,7 +182,10 @@ class BackendRunner:
             json.dumps({"config": entry, "request": request}, ensure_ascii=False, indent=2), encoding="utf-8",
         )
         env = os.environ.copy()
-        env.update({"PYTHONUNBUFFERED": "1", "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
+        env.update({
+            "PYTHONUNBUFFERED": "1", "PYTHONFAULTHANDLER": "1", "PYTHONIOENCODING": "utf-8",
+            "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+        })
         env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT / "src"), env.get("PYTHONPATH", "")]))
         with log_path.open("w", encoding="utf-8") as log:
             try:
@@ -200,8 +211,9 @@ class BackendRunner:
         if cancel_event is not None and cancel_event.is_set():
             raise BackendCancelled("Job cancelled.")
         if process.returncode:
-            tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-12:])
-            raise RuntimeError(f"{backend} failed (exit {process.returncode}). See {log_path}\n{tail}")
+            tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-35:])
+            hint = native_failure_hint(process.returncode)
+            raise RuntimeError(f"{backend} failed (exit {process.returncode}).{hint} See {log_path}\n{tail}")
         try:
             result = json.loads(result_path.read_text(encoding="utf-8"))
             if not isinstance(result, dict) or not result.get("outputs"):

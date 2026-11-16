@@ -8,6 +8,7 @@ from pathlib import Path
 from ..storage import write_json
 from ..text import NARRATION_ANCHOR_CHARS, NARRATION_SEGMENT_CHARS, TTS_SEGMENT_CHARS
 from .common import actual_seed, arguments, checked_device, write_audio, write_result
+from .voxcpm_loading import log_runtime, model_loading
 
 
 def generation_arguments(request: dict, seed: int) -> dict:
@@ -107,13 +108,17 @@ def run(config: dict, request: dict, output_path: Path) -> dict:
     import torch
     from voxcpm import VoxCPM
 
+    metadata["runtime"] = log_runtime(torch)
     device = checked_device(config, torch)
     metadata.update(device=str(device), torch_version=torch.__version__)
     print("Loading local VoxCPM2 once for this job.", flush=True)
-    model = VoxCPM.from_pretrained(
-        config["model_dir"], local_files_only=True, load_denoiser=False,
-        optimize=False, device=str(device), lora_weights_path=config.get("lora_weights_path"),
-    )
+    with model_loading(config) as loading:
+        metadata["safetensors_loading"] = loading
+        model = VoxCPM.from_pretrained(
+            config["model_dir"], local_files_only=True, load_denoiser=False,
+            optimize=False, device=str(device), lora_weights_path=config.get("lora_weights_path"),
+        )
+    print("[VoxCPM load] model.ready", flush=True)
     metadata["sample_rate"] = model.tts_model.sample_rate
     for index in range(total):
         # TTS segments reuse the voice settings and requested seed. Design

@@ -48,3 +48,18 @@ VoxCPM 训练清单路径依据实际 [`data.py`](https://github.com/OpenBMB/Vox
 - 原生 Windows、不同 CUDA 驱动和不同 GPU 代际的安装矩阵测试。
 
 实际有本地模型之后，应先完成 [路线图中的第一轮实机验收](ROADMAP.md)，把真实日志和听评结果追加到对应实验目录。无需为了这些缺失项停止当前已经可验证的 CPU 开发工作。
+
+## 2026-11-16：Windows 加载兼容与原生崩溃诊断
+
+针对用户在模型初始化附近遇到 `3221225477` 的报告，增加限定在 VoxCPM2 工作进程初始化期间的 pread 选择、加载步骤标记、依赖版本记录和 faulthandler。没有改动权重内容或生成参数。
+
+可重复检查：
+
+```bash
+python -m pytest tests/test_voxcpm_loading.py tests/test_backends.py tests/test_tts_worker_batch.py -q
+python -m ruff check src tests
+```
+
+测试验证 Windows/非 Windows 后端选择、旧接口兼容、显式覆盖、方法参数/返回值透传、异常保留、类自有与继承属性还原、有符号/无符号退出码、真实子进程的故障处理启用及 UTF-8 输出。原有单次加载、批量生成和首段定调契约继续验证。
+
+加载相关测试使用接口替身；没有在此环境中复现用户的 Windows 原生崩溃，也没有据此宣称 VoxCPM2 大模型已经在其显卡上加载成功。需要以用户更新后的实际任务结果确认。

@@ -4,6 +4,7 @@
     "upstream_dir": "../third_party/VoxCPM",
     "model_dir": "../models/VoxCPM2",
     "device": "cuda",
+    "safetensors_backend": "auto",
     "upstream_revision": "4b8dd4440d33396b3f429201f8af0529b4d2c601",
     "model_revision": "32279effe8c19989596f05d353d1447f51d9e915"
   },
