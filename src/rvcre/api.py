@@ -32,6 +32,7 @@ class TTSRequest(BaseModel):
     performance: Performance = Field(default_factory=Performance)
     mode: str = "controllable"
     seed: int = Field(default=42, ge=0, le=2**32 - 1)
+    narration: bool = False
 
 
 def create_app(workspace: Path = Path("data"), config_path: Path | None = None,
@@ -100,7 +101,8 @@ def create_app(workspace: Path = Path("data"), config_path: Path | None = None,
 
     @app.post("/api/tts", status_code=202)
     def tts(body: TTSRequest):
-        return service.submit_tts(body.voice_id, body.text, body.performance.model_dump(), body.mode, body.seed)
+        return service.submit_tts(body.voice_id, body.text, body.performance.model_dump(), body.mode, body.seed,
+                                  narration=body.narration)
 
     @app.post("/api/vc", status_code=202)
     def vc(audio: UploadFile = File(...), voice_id: str = Form(...),

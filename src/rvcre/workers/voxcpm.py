@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from ..storage import write_json
+from ..text import NARRATION_ANCHOR_CHARS, NARRATION_SEGMENT_CHARS, TTS_SEGMENT_CHARS
 from .common import actual_seed, arguments, checked_device, write_audio, write_result
 
 
@@ -54,6 +55,11 @@ def run(config: dict, request: dict, output_path: Path) -> dict:
     candidates = int(request.get("candidates", 1))
     if candidates < 1:
         raise ValueError("candidates must be positive.")
+    narration = request.get("narration", False)
+    if not isinstance(narration, bool):
+        raise ValueError("narration must be a boolean.")
+    if narration and request.get("task") != "tts":
+        raise ValueError("Narration continuity is only available for tts tasks.")
     segments = None
     if "segments" in request:
         if request.get("task") != "tts":
@@ -64,8 +70,11 @@ def run(config: dict, request: dict, output_path: Path) -> dict:
         if any(not isinstance(segment, str) for segment in supplied):
             raise ValueError("Each segment must be a text string.")
         segments = [segment.strip() for segment in supplied]
-        if any(not segment or len(segment) > 600 for segment in segments):
-            raise ValueError("Each segment must contain 1–600 characters after trimming whitespace.")
+        segment_limit = NARRATION_SEGMENT_CHARS if narration else TTS_SEGMENT_CHARS
+        if any(not segment or len(segment) > segment_limit for segment in segments):
+            raise ValueError(f"Each segment must contain 1–{segment_limit} characters after trimming whitespace.")
+        if narration and len(segments) > 1 and len(segments[0]) > NARRATION_ANCHOR_CHARS:
+            raise ValueError(f"The narration opening must contain at most {NARRATION_ANCHOR_CHARS} characters.")
         if candidates != 1:
             raise ValueError("Segmented tts requires exactly one candidate per segment.")
     first_request = request if segments is None else {**request, "text": segments[0]}
@@ -83,6 +92,8 @@ def run(config: dict, request: dict, output_path: Path) -> dict:
         "asset_revisions": config.get("asset_revisions", {}),
         "mode": "design" if request["task"] == "design" else request.get("mode", "controllable"),
         "requested_seed": seed, "lora_weights_path": config.get("lora_weights_path"),
+        "narration": narration,
+        "continuity": "fixed_opening" if narration and segments and len(segments) > 1 else "independent",
     }
 
     def report(phase: str, current: int | None = None) -> None:
@@ -109,14 +120,30 @@ def run(config: dict, request: dict, output_path: Path) -> dict:
         # candidates intentionally keep their existing incrementing seeds.
         requested_seed = (seed + index) % (2**32) if segments is None else seed
         segment_request = request if segments is None else {**request, "text": segments[index]}
-        kwargs = first_args if index == 0 else generation_arguments(segment_request, requested_seed)
+        if narration and segments is not None and index > 0:
+            # The opening WAV is a fixed continuation prompt for every later
+            # clip. Keep the original reference identity as a separate input.
+            # Do not feed later generations back: that would propagate drift.
+            # Style instructions are not spoken, so they must not enter either
+            # the prompt transcript or continuation target text.
+            kwargs = generation_arguments({**segment_request, "instruction": ""}, requested_seed)
+            # core.generate collapses target whitespace before speaking; the
+            # continuation transcript must describe that same spoken content.
+            kwargs.update(prompt_wav_path=outputs[0]["path"], prompt_text=" ".join(segments[0].split()))
+        else:
+            kwargs = first_args if index == 0 else generation_arguments(segment_request, requested_seed)
         report("generating", index + 1)
         print(f"Generating {index + 1}/{total}; requested seed {requested_seed}.", flush=True)
         wav = model.generate(**kwargs)
         path = output_path.parent / f"audio-{index + 1:03d}.wav"
         write_audio(path, wav, model.tts_model.sample_rate)
         used_seed = getattr(model.tts_model, "last_successful_seed", None)
-        output = {"path": str(path.resolve()), "seed": used_seed if used_seed is not None else requested_seed}
+        output = {
+            "path": str(path.resolve()), "seed": used_seed if used_seed is not None else requested_seed,
+            "requested_seed": requested_seed,
+            "duration_seconds": len(wav) / model.tts_model.sample_rate,
+            "prompt_source_segment": 1 if narration and segments is not None and index > 0 else None,
+        }
         if segments is not None:
             output["segment_index"] = index + 1
         outputs.append(output)

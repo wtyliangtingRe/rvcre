@@ -202,16 +202,20 @@ def _generation_view(job: dict, *, clear: bool = False) -> tuple:
     )
 
 
-def _tts_text_summary(text: str) -> str:
-    from .text import split_tts_text
+def _tts_text_summary(text: str, narration: bool = False) -> str:
+    from .text import NARRATION_ANCHOR_CHARS, NARRATION_SEGMENT_CHARS, TTS_SEGMENT_CHARS, plan_tts_segments
 
-    segments = split_tts_text(text or "")
+    segments = plan_tts_segments(text or "", narration=narration)
     if not segments:
         return "生成后可试听完整音频，长文还会保留分段音频与文稿。"
     count = len(text.strip())
     if len(segments) == 1:
         return f"共 {count:,} 个字符 · 生成 1 段音频"
-    return f"共 {count:,} 个字符 · 自动切分为 {len(segments)} 段 · 每段最多 600 个字符"
+    if narration:
+        return (f"共 {count:,} 个字符 · 自动切分为 {len(segments)} 段 · "
+                f"首段最多 {NARRATION_ANCHOR_CHARS} 个字符定调，"
+                f"后续每段最多 {NARRATION_SEGMENT_CHARS} 个字符")
+    return f"共 {count:,} 个字符 · 自动切分为 {len(segments)} 段 · 每段最多 {TTS_SEGMENT_CHARS} 个字符"
 
 
 class _UiActions:
@@ -332,7 +336,8 @@ class _UiActions:
                 *self._voice_updates(profile["id"]))
 
     def start_tts(self, job_id: str | None, voice_id: str | None, text: str, mode: str,
-                  speed: float, emotion: str, instruction: str, seed: int) -> tuple:
+                  speed: float, emotion: str, instruction: str, seed: int,
+                  narration: bool = False) -> tuple:
         self._ensure_idle(job_id)
         if not voice_id:
             raise gr.Error("请先选择一个声音身份。")
@@ -343,7 +348,7 @@ class _UiActions:
             "speed": float(speed), "emotion": emotion, "instruction": instruction,
         }
         job = self._call(self.service.submit_tts, voice_id=voice_id, text=text,
-                         performance=performance, mode=mode, seed=int(seed))
+                         performance=performance, mode=mode, seed=int(seed), narration=narration)
         return _generation_view(job, clear=True)
 
     def start_vc(self, job_id: str | None, voice_id: str | None, source_path: str | None,
@@ -525,6 +530,10 @@ def build_ui(service: VoiceService) -> gr.Blocks:
                                         instruction = gr.Textbox(label="表达补充（可选）", placeholder="例如：像朋友聊天，句末稍停顿。")
                                     with gr.Accordion("生成选项", open=False):
                                         tts_seed = gr.Number(value=42, precision=0, minimum=0, maximum=2**32 - 1, label="随机种子")
+                                        tts_narration = gr.Checkbox(value=False, label="长文首段定调（试用）",
+                                            info="先试听首段；后续较短的段落共同参照它的声音与节奏，生成后仍自动合并。")
+                                        gr.Markdown("开启后，可控表达的语速和情绪指令先用于首段，后续跟随首段风格。"
+                                                    "首段不满意时，请调整设置后重新生成。", elem_classes="rv-muted")
                                     tts_submit = gr.Button("生成语音", variant="primary")
                                 with gr.Tab("录音换声音 · VC"):
                                     gr.Markdown("上传原始表演，转换为所选声音身份。")
@@ -582,10 +591,13 @@ def build_ui(service: VoiceService) -> gr.Blocks:
         candidate_save.click(actions.save_candidate, inputs=[design_job, selected_candidate, candidate_name],
                              outputs=[candidate_save_status, *voice_outputs], concurrency_limit=1, **private)
         tts_mode.change(_mode_controls, inputs=[tts_mode], outputs=[expression_controls, mode_note], **private)
-        tts_text.input(_tts_text_summary, inputs=[tts_text], outputs=[tts_summary],
+        tts_text.input(_tts_text_summary, inputs=[tts_text, tts_narration], outputs=[tts_summary],
                        queue=False, show_progress="hidden", **private)
+        tts_narration.change(_tts_text_summary, inputs=[tts_text, tts_narration], outputs=[tts_summary],
+                             queue=False, show_progress="hidden", **private)
         tts_submit.click(actions.start_tts,
-                         inputs=[generation_job, generation_voice, tts_text, tts_mode, speed, emotion, instruction, tts_seed],
+                         inputs=[generation_job, generation_voice, tts_text, tts_mode, speed, emotion,
+                                 instruction, tts_seed, tts_narration],
                          outputs=generation_outputs, concurrency_id="generation-submit", concurrency_limit=1, **private)
         vc_submit.click(actions.start_vc,
                         inputs=[generation_job, generation_voice, source_audio, vc_steps, vc_similarity, vc_intelligibility],

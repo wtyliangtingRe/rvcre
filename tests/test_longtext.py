@@ -18,7 +18,7 @@ import soundfile as sf
 from rvcre.audio import merge_audio_files
 from rvcre.service import VoiceService
 from rvcre.storage import write_json
-from rvcre.text import split_tts_text
+from rvcre.text import plan_tts_segments, split_tts_text
 
 
 LONG_TEXT = "\n\n".join([
@@ -268,3 +268,74 @@ def test_api_accepts_entire_script_and_serves_the_completed_archive(prepare_serv
         assert merged.status_code == 200 and merged.content.startswith(b"RIFF")
         assert client.get(root + "/files/-1").status_code == 404
         assert client.get(root + "/files/1").status_code == 404
+
+
+@pytest.mark.parametrize("text", [
+    LONG_TEXT,
+    "  开场第一句。\r\n\r\n" + "完整正文与标点，不能漏字。" * 100 + "  ",
+    "无标点ABC123🔊" * 70,
+    'She said: "Production grew by 3.14 percent."\n' * 25,
+])
+def test_narration_plan_preserves_all_content_and_bounds_the_fixed_prompt(text):
+    chunks = plan_tts_segments(text, narration=True)
+    assert len(chunks) > 1
+    assert 0 < len(chunks[0]) <= 80
+    assert all(0 < len(chunk) <= 240 for chunk in chunks)
+    assert without_space("".join(chunks)) == without_space(text)
+    assert plan_tts_segments(text) == split_tts_text(text)
+
+
+@pytest.mark.parametrize("text", ["", " \n ", "你好。", "字" * 240])
+def test_narration_does_not_add_a_calibration_sentence_to_short_text(text):
+    assert plan_tts_segments(text, narration=True) == split_tts_text(text, 240)
+
+
+def test_short_title_does_not_become_the_only_narration_prompt():
+    title = "第一集。\n\n"
+    sentence = "工厂重新开工之后，产品还需要卖到国外。"
+    text = title + sentence * 20
+    chunks = plan_tts_segments(text, narration=True)
+    assert chunks[0].startswith(title)
+    assert chunks[0].endswith("。")
+    assert 40 <= len(chunks[0]) <= 80
+    assert sentence in chunks[0]
+    assert without_space("".join(chunks)) == without_space(text)
+
+
+@pytest.mark.parametrize("speed,expected", [
+    (0.7, "语速较慢"), (0.9, "语速稍慢"), (0.95, "语速稍慢"),
+    (1.0, ""), (1.05, "语速稍快"), (1.1, "语速稍快"), (1.4, "语速较快"),
+])
+def test_small_speed_adjustments_produce_a_style_request(speed, expected):
+    from rvcre.schema import Performance, performance_instruction
+
+    assert performance_instruction(Performance(speed=speed)) == expected
+
+
+def test_narration_job_exports_the_opening_once_and_records_its_strategy(prepare_service):
+    service, voice = prepare_service()
+    submitted = service.submit_tts(voice["id"], LONG_TEXT, seed=41, narration=True)
+    job = terminal(service, submitted["id"])
+    assert job["status"] == "succeeded", job
+    _, request = service.runner.requests[0]
+    assert request["narration"] is True
+    assert request["segment_limit"] == 240
+    chunks = request["segments"]
+    assert chunks == plan_tts_segments(LONG_TEXT, True)
+    merged, rate = sf.read(service.audio_path(job["id"], 0), dtype="float32")
+    assert rate == 8000
+    # Each test clip is 80 samples; only 200 ms of silence is inserted at joins.
+    expected = []
+    for index in range(len(chunks)):
+        if index:
+            expected.extend([0.0] * 1600)
+        expected.extend([(index + 1) / 16] * 80)
+    np.testing.assert_array_equal(merged, np.array(expected, dtype="float32"))
+    with zipfile.ZipFile(job["files"][0]) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["schema_version"] == 2
+        assert manifest["continuity"] == "fixed_opening"
+        assert manifest["anchor_segment"] == 1 and manifest["anchor_limit"] == 80
+        assert manifest["segment_limit"] == 240
+        assert manifest["requested_seed"] == 41
+        assert len(manifest["segments"]) == len(chunks)

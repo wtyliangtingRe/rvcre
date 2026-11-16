@@ -50,8 +50,12 @@ def performance_instruction(performance: Performance) -> str:
     words = []
     if performance.speed < 0.9:
         words.append("语速较慢")
+    elif performance.speed < 1.0:
+        words.append("语速稍慢")
     elif performance.speed > 1.1:
         words.append("语速较快")
+    elif performance.speed > 1.0:
+        words.append("语速稍快")
     if performance.emotion != "neutral":
         words.append({
             "happy": "愉快的语气", "sad": "悲伤的语气", "angry": "愤怒的语气",

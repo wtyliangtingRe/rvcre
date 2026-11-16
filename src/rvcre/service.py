@@ -10,7 +10,7 @@ from .audio import analyze_audio, merge_audio_files, reference_audio
 from .jobs import JobManager
 from .schema import Performance, VoiceSpec, design_instruction, performance_instruction
 from .storage import item_path, read_json, timestamp, write_json
-from .text import TTS_SEGMENT_CHARS, split_tts_text
+from .text import NARRATION_ANCHOR_CHARS, NARRATION_SEGMENT_CHARS, TTS_SEGMENT_CHARS, plan_tts_segments
 
 
 class VoiceService:
@@ -159,14 +159,20 @@ class VoiceService:
             # Text and audio share an index; originals are copied byte-for-byte into
             # the archive so individual paragraphs can be regenerated or edited.
             manifest = {
-                "schema_version": 1, "voice_id": request["voice_id"],
+                "schema_version": 2, "voice_id": request["voice_id"],
                 "voice_revision": request["voice_revision"], "mode": request["mode"],
                 "performance": request["performance"], "requested_seed": request["seed"],
-                "segment_count": total, "segment_limit": TTS_SEGMENT_CHARS,
+                "segment_count": total, "segment_limit": request["segment_limit"],
+                "narration": request.get("narration", False),
+                "continuity": "fixed_opening" if request.get("narration") else "independent",
+                "anchor_segment": 1 if request.get("narration") else None,
+                "anchor_limit": NARRATION_ANCHOR_CHARS if request.get("narration") else None,
                 "gap_seconds": request["gap_seconds"], "merged_audio": audio_info,
                 "segments": [{"index": index, "audio": f"audio-{index:03d}.wav",
                               "text": f"text-{index:03d}.txt", "characters": len(segments[index - 1]),
-                              "seed": item.get("seed")}
+                              "seed": item.get("seed"), "requested_seed": request["seed"],
+                              "duration_seconds": item.get("duration_seconds"),
+                              "prompt_source_segment": item.get("prompt_source_segment")}
                              for index, item in enumerate(outputs, 1)],
             }
             write_json(directory / "manifest.json", manifest)
@@ -228,7 +234,7 @@ class VoiceService:
         )
 
     def submit_tts(self, voice_id: str, text: str, performance: dict | None = None,
-                   mode: str = "controllable", seed: int = 42) -> dict:
+                   mode: str = "controllable", seed: int = 42, narration: bool = False) -> dict:
         voice = self.get_voice(voice_id)
         controls = Performance.model_validate(performance or {})
         if mode not in ("controllable", "hifi"):
@@ -239,13 +245,15 @@ class VoiceService:
             if controls != Performance():
                 raise ValueError("Hi-Fi 模式不支持额外表达控制，请恢复默认设置或使用可控模式。")
         text = self._text(text, max_length=None)
-        segments = split_tts_text(text)
+        segments = plan_tts_segments(text, narration)
         request = {
             "task": "tts", "text": text, "voice_id": voice_id,
             "voice_revision": voice["revision"], "reference_path": voice["reference_path"],
             "reference_text": voice["transcript"], "instruction": performance_instruction(controls),
             "performance": controls.model_dump(), "mode": mode, "seed": self._seed(seed),
             "candidates": 1, "settings": {},
+            "narration": narration,
+            "segment_limit": NARRATION_SEGMENT_CHARS if narration else TTS_SEGMENT_CHARS,
         }
         if len(segments) > 1:
             return self._submit_long_tts({**request, "segments": segments, "gap_seconds": 0.2})

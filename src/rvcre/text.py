@@ -4,6 +4,8 @@ import re
 
 
 TTS_SEGMENT_CHARS = 600
+NARRATION_SEGMENT_CHARS = 240
+NARRATION_ANCHOR_CHARS = 80
 _PARAGRAPH = re.compile(r"\n[ \t]*\n+")
 _LINE = re.compile(r"\n")
 _SENTENCE = re.compile(r'''(?:[。！？!?]+|\.(?=\s|$|[”’"']))[。！？!?….”’」』）》】"']*''')
@@ -39,3 +41,34 @@ def split_tts_text(text: str, max_chars: int = TTS_SEGMENT_CHARS) -> list[str]:
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+def plan_tts_segments(text: str, narration: bool = False) -> list[str]:
+    """Plan an optional short, fixed opening prompt followed by bounded clips.
+
+    The opening is part of the requested narration, not extra calibration text.
+    Its entire audio and matching text are reused, avoiding guessed alignment
+    between an arbitrary audio tail and a different text suffix.
+    """
+    if not isinstance(narration, bool):
+        raise ValueError("首段定调选项必须为布尔值。")
+    if not narration:
+        return split_tts_text(text)
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(normalized) <= NARRATION_SEGMENT_CHARS:
+        return split_tts_text(normalized, NARRATION_SEGMENT_CHARS)
+    # Avoid anchoring a whole article on a few-character title or greeting.
+    # Prefer a natural boundary in the latter half of the opening window;
+    # earlier newlines remain inside the prompt instead of ending it early.
+    window = normalized[:NARRATION_ANCHOR_CHARS + 1]
+    cut = NARRATION_ANCHOR_CHARS
+    for pattern in (_PARAGRAPH, _LINE, _SENTENCE, _CLAUSE, _SPACE):
+        boundaries = [match.end() for match in pattern.finditer(window)
+                      if NARRATION_ANCHOR_CHARS // 2 <= match.end() <= NARRATION_ANCHOR_CHARS
+                      and len(normalized[:match.end()].strip()) >= NARRATION_ANCHOR_CHARS // 2]
+        if boundaries:
+            cut = boundaries[-1]
+            break
+    opening = normalized[:cut].strip()
+    remainder = normalized[len(opening):].lstrip()
+    return [opening, *split_tts_text(remainder, NARRATION_SEGMENT_CHARS)]

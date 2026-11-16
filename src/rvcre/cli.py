@@ -64,6 +64,7 @@ def parser() -> argparse.ArgumentParser:
     tts.add_argument("--speed", type=float, default=1.0, help="语速倾向：模型指令控制，不是精确倍率")
     tts.add_argument("--instruction", default="")
     tts.add_argument("--seed", type=int, default=42)
+    tts.add_argument("--narration", action="store_true", help="试用长文首段定调：较短分段共同参照首段声音与节奏")
     vc = commands.add_parser("vc", help="音色转换，等待任务完成")
     _common(vc)
     vc.add_argument("--voice", required=True)
@@ -167,7 +168,7 @@ def main(argv=None):
                 text = args.text_file.read_text(encoding="utf-8") if args.text_file else args.text
                 return _wait(service, service.submit_tts(args.voice, text, {
                     "speed": args.speed, "emotion": args.emotion, "instruction": args.instruction,
-                }, args.mode, args.seed))
+                }, args.mode, args.seed, narration=args.narration))
             elif args.command == "vc":
                 return _wait(service, service.submit_vc(args.voice, str(args.source), {
                     "diffusion_steps": args.steps, "similarity_cfg_rate": args.similarity,

@@ -105,13 +105,15 @@ def test_batch_uses_one_model_and_reuses_voice_controls_for_every_segment(tmp_pa
     assert not (tmp_path / "result.json").exists()  # Only main publishes the final result.
 
 
-def test_completed_clips_survive_later_segment_failure(tmp_path, batch_model):
+@pytest.mark.parametrize("narration", [False, True])
+def test_completed_clips_survive_later_segment_failure(tmp_path, batch_model, narration):
     config, reference, observed = batch_model
     observed["fail_on"] = 2
     with pytest.raises(RuntimeError, match="test-only segment failure"):
         worker.run(config, {
             "task": "tts", "text": "全文", "segments": ["第一段。", "第二段。", "第三段。"],
             "reference_path": str(reference), "seed": 42,
+            "narration": narration,
         }, tmp_path / "result.json")
 
     assert len(observed["loads"]) == 1
@@ -135,6 +137,9 @@ def test_completed_clips_survive_later_segment_failure(tmp_path, batch_model):
     {"segments": ["甲" * 601]},
     {"segments": ["合法文本。"], "candidates": 2},
     {"segments": ["合法文本。"], "task": "design"},
+    {"segments": ["第一段。", "甲" * 241], "narration": True},
+    {"segments": ["甲" * 81, "第二段。"], "narration": True},
+    {"segments": ["合法文本。"], "narration": "true"},
 ])
 def test_invalid_batch_is_rejected_before_model_imports(tmp_path, monkeypatch, overrides):
     original_import = builtins.__import__
@@ -148,3 +153,38 @@ def test_invalid_batch_is_rejected_before_model_imports(tmp_path, monkeypatch, o
     with pytest.raises(ValueError):
         worker.run({}, {"task": "tts", "text": "全文", **overrides}, tmp_path / "result.json")
     assert not (tmp_path / "progress.json").exists()
+
+
+@pytest.mark.parametrize("mode", ["controllable", "hifi"])
+def test_narration_conditions_all_later_clips_on_fixed_opening(tmp_path, batch_model, mode):
+    config, reference, observed = batch_model
+    segments = ["这是用于定调的开场。\n\n接着同一段的下一句。", "第二段正文与第一段不同。", "第三段不应沿用第二段的偏差。"]
+    instruction = "平静，语速稍慢" if mode == "controllable" else ""
+    result = worker.run(config, {
+        "task": "tts", "text": "".join(segments), "segments": segments,
+        "reference_path": str(reference), "reference_text": "原始参考录音的文字。",
+        "mode": mode, "instruction": instruction, "seed": 41, "narration": True,
+    }, tmp_path / "result.json")
+
+    calls = observed["calls"]
+    assert len(observed["loads"]) == 1
+    assert calls[0]["text"] == (f"({instruction})" if instruction else "") + segments[0]
+    assert [call["text"] for call in calls[1:]] == segments[1:]
+    assert all(call["reference_wav_path"] == str(reference.resolve()) for call in calls)
+    opening_path = result["outputs"][0]["path"]
+    assert all(call["prompt_wav_path"] == opening_path for call in calls[1:])
+    assert all(call["prompt_text"] == "这是用于定调的开场。 接着同一段的下一句。" for call in calls[1:])
+    if mode == "hifi":
+        assert calls[0]["prompt_wav_path"] == str(reference.resolve())
+        assert calls[0]["prompt_text"] == "原始参考录音的文字。"
+    else:
+        assert "prompt_text" not in calls[0]
+    assert [call["seed"] for call in calls] == [41, 41, 41]
+    assert [item["requested_seed"] for item in result["outputs"]] == [41, 41, 41]
+    assert [item["seed"] for item in result["outputs"]] == [42, 43, 44]
+    assert [item["prompt_source_segment"] for item in result["outputs"]] == [None, 1, 1]
+    assert result["metadata"]["continuity"] == "fixed_opening"
+    assert len(result["outputs"]) == len(segments)
+    for output in result["outputs"]:
+        info = sf.info(output["path"])
+        assert output["duration_seconds"] == pytest.approx(info.duration)
